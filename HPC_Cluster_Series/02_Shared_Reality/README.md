@@ -182,28 +182,41 @@ sudo systemctl stop munge
 
 #### Deploying the Key — From `headnode`:
 
-Because `/etc/munge` is a protected system directory owned by the root account, a raw `scp` command will fail due to write permissions on the destination. Instead, pipe the binary key file through SSH and use the `tee` utility to write it securely on the client node:
+Because `/etc/munge` is a protected system directory owned by the `root` account on both systems, a raw `scp` command will fail due to write permission restrictions on the destination folder. 
 
+Depending on your environment, you can use one of two methods:
+
+##### Method A: Direct Piped Copy (Requires Passwordless SSH Configured First)
+If passwordless SSH is already configured, you can read the file on the headnode as `root` and pipe it over SSH to the client node:
 ```bash
-cat /etc/munge/munge.key | ssh -t ubuntu@compute-01 "sudo tee /etc/munge/munge.key > /dev/null"
+sudo cat /etc/munge/munge.key | ssh ubuntu@10.100.0.11 "sudo tee /etc/munge/munge.key > /dev/null"
 ```
+> **⚠️ Note on Terminal/Password Errors:** If you have not set up passwordless SSH yet, the command above will fail with a `sudo: a terminal is required` error. This happens because redirecting the pipe (`|`) consumes standard input (`stdin`), preventing the remote `sudo` command from prompting you for your password. If this occurs, use Method B below.
+
+##### Method B: Staged Temporary Copy (Recommended when passwords are still required)
+1. **On `headnode`:** Copy the key to a temporary location, make it readable to your user, and copy it to the compute node:
+   ```bash
+   sudo cp /etc/munge/munge.key /tmp/munge.key
+   sudo chmod 644 /tmp/munge.key
+   scp /tmp/munge.key ubuntu@10.100.0.11:/tmp/munge.key
+   sudo rm /tmp/munge.key
+   ```
+2. **On `compute-01`:** Move the staged file to its destination and apply security settings:
+   ```bash
+   sudo mv /tmp/munge.key /etc/munge/munge.key
+   sudo chown munge:munge /etc/munge/munge.key
+   sudo chmod 400 /etc/munge/munge.key
+   ```
 
 ---
 
 #### Securing and Starting the Client Daemon — On `compute-01`:
 
-**Lock down the newly arrived key file to prevent daemon initialization failure:**
+Once the key is deployed in `/etc/munge/munge.key` with the correct permissions (`400`, owned by `munge:munge`), restart the client daemon:
 
 ```bash
-sudo chown munge:munge /etc/munge/munge.key
-sudo chmod 400 /etc/munge/munge.key
-```
-
-**Start the authenticated processing loop:**
-
-```bash
+sudo systemctl restart munge
 sudo systemctl enable munge
-sudo systemctl start munge
 ```
 
 ---
