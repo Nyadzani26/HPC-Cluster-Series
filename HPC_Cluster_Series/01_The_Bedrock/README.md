@@ -1,136 +1,512 @@
-# Chapter 1: The Bedrock – Networking and Time Synchronization
+# Chapter 1: The Bedrock – Networking, Firewalls, and Time Synchronization
+
+---
 
 ## 1.1. The Role of Networking in Distributed Systems
 
-In a Distributed System, the network is not merely a utility; it is the **system bus**. Just as a CPU accesses RAM via a motherboard bus, compute nodes access shared data and receive instructions via the network fabric.
+In a Distributed System, the network is not merely a utility; it is the **system bus**. Just as a CPU accesses RAM via a motherboard bus, compute nodes access shared data and receive instructions via the **network fabric**.
 
-### **The "Split-Brain" Problem**
-In standalone computing, if a cable is unplugged, the internet stops. In High Performance Computing (HPC), if the internal network fails, the cluster can suffer from a condition known as "Split-Brain." This occurs when nodes lose contact with the controller and, assuming the controller is dead, may attempt to take unsafe actions or simply stall indefinitely. Therefore, reliability and predictability in the network layer are paramount.
+---
 
-### **Latency vs. Bandwidth**
-*   **Bandwidth** is how *much* data you can send at once (e.g., streaming a 4K movie).
-*   **Latency** is how *fast* a single message arrives (e.g., a ping in a video game).
-HPC workloads are strictly **latency-sensitive**. When a simulation runs across 100 nodes, Node A often cannot proceed to Step 2 until it receives a result from Node B. If the network introduces a 10-millisecond delay, and this exchange happens 10,000 times a second, the supercomputer spends most of its time waiting, not computing.
+### The "Split-Brain" Problem
 
-### **Name Resolution Strategies**
-Nodes must address each other by name (e.g., `compute-01`), not just by IP address. While the Domain Name System (DNS) works well for the internet, it introduces latency.
-*   **Enterprise approach:** Centralized DNS servers.
-*   **HPC approach:** Local lookup files (`/etc/hosts`). by distributing a static list of names to every node, we ensure that address resolution happens instantly (microseconds) without a network round-trip to a DNS server.
+In standalone computing, if a cable is unplugged, the internet stops. In High Performance Computing (HPC), if the internal network fails, the cluster can suffer from a condition known as **"Split-Brain."**
+
+This occurs when nodes lose contact with the controller and, assuming the controller is dead, may attempt to take unsafe actions or simply stall indefinitely. Therefore, **reliability and predictability** in the network layer are paramount.
+
+---
+
+### Latency vs. Bandwidth
+
+| Concept | Definition | Real-World Analogy |
+|---|---|---|
+| **Bandwidth** | How *much* data you can send at once | Streaming a 4K movie |
+| **Latency** | How *fast* a single message arrives | A ping in a video game |
+
+HPC workloads are strictly **latency-sensitive**. When a simulation runs across 100 nodes, Node A often cannot proceed to Step 2 until it receives a result from Node B. If the network introduces a 10-millisecond delay, and this exchange happens 10,000 times a second, the supercomputer spends most of its time **waiting**, not computing.
+
+---
+
+### Name Resolution Strategies
+
+Nodes must address each other by name (e.g., `compute-01`), not just by IP address. While the Domain Name System (DNS) works well for the internet, it introduces **query latency**.
+
+| Approach | Method | Characteristics |
+|---|---|---|
+| **Enterprise** | Centralized DNS servers | Flexible, scalable, slight network overhead |
+| **HPC** | Local lookup files (`/etc/hosts`) | Instant (microsecond) resolution, no round-trip |
+
+By distributing a static list of names to every node, we ensure that address resolution happens **instantly** (in microseconds) without a network round-trip to an external DNS server.
 
 ---
 
 ## 1.2. The Necessity of Time Synchronization
 
-Time is one of the complex problems in computer science. In a single computer, the CPU clock is the absolute truth. In a distributed system, there is no absolute truth—only relative time.
-
-### **The Problem of Clock Drift**
-Every computer's hardware clock (Quartz crystal) vibrates at a slightly different frequency. Over the course of a day, two identical computers can drift apart by seconds.
-*   **Impact on Authentication:** Security protocols (like Kerberos or Munge) issue tokens valid for a specific timeframe. If Node A thinks it is 12:00:00 and Node B thinks it is 12:05:00, a token valid for "12:00:00 +/- 1 minute" will be rejected by Node B as "expired."
-*   **Impact on Logging:** If a calculation creates an error on Node A before crashing Node B, but Node B's clock is slow, the logs might imply the crash happened *before* the error, making debugging impossible.
-
-### **NTP and Chrony**
-To solve this, we use the Network Time Protocol (NTP). A master server connects to an atomic clock (Stratum 0), and downstream servers synchronize their clocks to it using sophisticated algorithms to account for network delay. In modern Linux systems, **Chrony** is the preferred implementation because it synchronizes the system clock faster and with greater accuracy than older NTP daemons.
+Time is one of the most complex problems in computer science. In a single computer, the CPU clock is the **absolute truth**. In a distributed system, there is no absolute truth — only **relative time**.
 
 ---
 
-## 1.3. Architecture of the Cluster Network
+### The Problem of Clock Drift
 
-For a secure and stable cluster, we typically segregate traffic into two networks:
-1.  **Public Network:** For administrative access (You SSH-ing into the Head Node).
-2.  **Private Cluster Network:** An isolated network where nodes talk to each other. This prevents outside traffic from interfering with sensitive computations.
+Every computer's hardware clock (Quartz crystal) vibrates at a slightly different frequency. Over the course of a day, two identical computers can drift apart by **seconds**.
 
-In our implementation, we will simulate this using a **Private Virtual LAN (NAT Subnet)**.
+#### Impact on Authentication
+Security protocols (like **Munge**) issue tokens valid for a strict timeframe.
+
+> **Example:** If Node A thinks it is `12:00:00` and Node B thinks it is `12:05:00`, a token valid for `"12:00:00 +/- 1 minute"` will be **rejected by Node B as expired**.
+
+#### Impact on Logging
+If a calculation creates an error on Node A *before* crashing Node B, but Node B's clock is slow, the logs might imply the crash happened **before** the error — making debugging impossible.
 
 ---
 
-# 1.4. Laboratory: Configuring the Bedrock
+### NTP and Chrony
 
-In this lab, we will configure the foundational networking and time services on our Ubuntu nodes.
+To solve this, we use the **Network Time Protocol (NTP)**. A master server connects to an atomic clock (**Stratum 0**), and downstream servers synchronize their clocks to it using sophisticated algorithms to account for network delay.
 
-### **Prerequisites**
-*   **Hypervisor:** VMware Workstation
-*   **OS:** Ubuntu Server 24.04 LTS installed on two VMs.
-*   **VM Names:** `headnode` and `compute-01`.
+In modern Linux systems, **Chrony** is the preferred implementation because it synchronizes the system clock faster and with greater accuracy than older NTP daemons.
 
-### **Step 1: Configuring Static IP Addresses (Netplan)**
-We cannot rely on DHCP (Dynamic IP assignment) because server IPs must never change. We will use **Netplan**, the standard network configuration utility in Ubuntu.
+```
+[Atomic Clock — Stratum 0]
+        │
+[Public NTP Pool — Stratum 1/2]
+        │
+[headnode — NTP Server — Stratum 10]
+        │
+[compute-01 — NTP Client]
+```
 
-**On ANY Node (Repeat for both):**
-1.  Open the Netplan configuration file:
-    ```bash
-    sudo nano /etc/netplan/50-cloud-init.yaml
-    ```
-2.  Your interface name (e.g., `ens33`) may vary. Check it with `ip addr`.
-3.  Configure the static IP:
+---
 
-**For `headnode`:**
+## 1.3. Architecture of the CHPC Cluster Network
+
+To replicate the CHPC Student Cluster Competition architecture (Sebowa Cloud environment) inside **VMware Workstation**, we must move away from flat networks. We segregate traffic using a **dual-homed Head Node topology**:
+
+```
+  [ Internet / External LAN ]
+              │
+      <external_nic> (e.g., ens33 - DHCP/Static WAN)
+              ▼
+       ┌──────────────┐
+       │   headnode   │ ──► [ Stateful nftables Firewall ]
+       └──────────────┘
+              ▲
+      <internal_nic> (e.g., ens34 - 192.168.116.10)
+              │
+  [ Isolated Private Virtual Switch ]
+              │
+              ├──► compute-01 (192.168.116.11)
+```
+
+| Network | Purpose |
+|---|---|
+| **Public / External** | Connects the headnode to the outside world for remote administrative access and internet downloads |
+| **Private Cluster Network** | An isolated host-only virtual switch (`192.168.116.0/24`) where cluster nodes communicate exclusively |
+
+> **Key Design Principle:** Compute nodes sit **exclusively** on the private network. They have no direct external cable and must route through the headnode via **Network Address Translation (NAT)** to access the internet.
+
+---
+
+## 1.4. Laboratory: Configuring the Bedrock
+
+---
+
+### Prerequisites
+
+| Requirement | Detail |
+|---|---|
+| **Hypervisor** | VMware Workstation |
+| **OS** | Ubuntu Server 24.04 LTS (Minimal Install) on two VMs |
+| **VM Hostnames** | `headnode` and `compute-01` |
+| **headnode NICs** | Two network adapters: one NAT/Bridged, one Host-Only |
+| **compute-01 NICs** | One network adapter: Host-Only only |
+
+---
+
+### Step 1: Identifying Interface Names
+
+Because VMware assigns random names to network cards, you must look up your specific device handles.
+
+**On BOTH nodes, run:**
+
+```bash
+ip addr
+```
+
+Identify your interface names (e.g., `ens33`, `ens34`, `enp2s1`). Note them down — you will need them throughout this lab.
+
+---
+
+### Step 2: Configuring Fixed IP Identities (Netplan)
+
+Server IP addresses must **never change**. We will hardcode static configurations using **Netplan**.
+
+#### On `headnode`:
+
+Open the Netplan configuration file:
+
+```bash
+sudo nano /etc/netplan/50-cloud-init.yaml
+```
+
+Wipe the file and replace it with the following blueprint. Replace `<external_nic>` and `<internal_nic>` with your actual interface names from Step 1:
+
 ```yaml
 network:
+    version: 2
     ethernets:
-        ens33:
+        <external_nic>:
+            dhcp4: true
+        <internal_nic>:
             dhcp4: false
             addresses:
             - 192.168.116.10/24
-            routes:
-            - to: default
-              via: 192.168.116.2
-            nameservers:
-                addresses: [8.8.8.8, 8.8.4.4]
-    version: 2
 ```
 
-**For `compute-01`:**
-Change the address to `192.168.116.11/24`, keep everything else the same.
+#### On `compute-01`:
 
-4.  Apply the changes:
-    ```bash
-    sudo netplan apply
-    ```
+Open the Netplan configuration file:
 
-### **Step 2: Configuring Fast Name Resolution (Hosts File)**
-We will hardcode the cluster's "phonebook" to ensure zero-latency lookups.
+```bash
+sudo nano /etc/netplan/50-cloud-init.yaml
+```
 
-**On BOTH nodes:**
-1.  Open the file:
-    ```bash
-    sudo nano /etc/hosts
-    ```
-2.  Add these lines at the bottom:
-    ```
-    192.168.116.10 headnode
-    192.168.116.11 compute-01
-    ```
-3.  **Verification:** From `compute-01`, try to ping the headnode by name:
-    ```bash
-    ping -c 4 headnode
-    ```
+Configure its single private interface to route all internet traffic through the headnode:
 
-### **Step 3: Disabling the Firewall**
-In a production environment, we would craft strict firewall rules. However, inside a secured, private cluster fabric, internal firewalls add latency and complexity. Since our cluster network is isolated, we disable the internal firewall to allow unrestricted communication between Slurm, NFS, and MPI services.
+```yaml
+network:
+    version: 2
+    ethernets:
+        <internal_nic>:
+            dhcp4: false
+            addresses:
+            - 192.168.116.11/24
+            routes:
+            - to: default
+              via: 192.168.116.10
+            nameservers:
+                addresses:
+```
 
-**On BOTH nodes:**
+#### Apply Changes on Both Nodes:
+
+```bash
+sudo netplan apply
+```
+
+---
+
+### Step 3: Configuring the Head Node Gateway Router (NAT & IP Forwarding)
+
+Because `compute-01` is on an isolated network, it currently **cannot access the internet** to install packages. We must turn the headnode into a **router**.
+
+**On `headnode`:**
+
+Enable IP forwarding in the Linux kernel:
+
+```bash
+sudo sysctl -w net.ipv4.ip_forward=1
+```
+
+Make this permanent across reboots:
+
+```bash
+echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
+```
+
+---
+
+### Step 4: Deploying the Stateful nftables Firewall
+
+Ubuntu uses `ufw` by default, but CHPC utilizes **nftables** for unified packet filtering and high-performance NAT handling. We will disable `ufw` and deploy an advanced nftables framework.
+
+---
+
+#### On BOTH Nodes — Disable default UFW:
+
 ```bash
 sudo ufw disable
 ```
 
-### **Step 4: Synchronizing Time (Chrony)**
-We will install Chrony to ensure our nodes are perfectly synced.
+---
 
-**On BOTH nodes:**
-1.  Install Chrony:
-    ```bash
-    sudo apt update
-    sudo apt install chrony -y
-    ```
-2.  Verify synchronization:
-    ```bash
-    chronyc tracking
-    ```
-    *Look for "System time" offset. It should be very small (e.g., < 0.001 seconds).*
+#### On `headnode` — Configure Gateway Firewall:
+
+**Install the userspace utility:**
+
+```bash
+sudo apt update && sudo apt install nftables -y
+```
+
+**Flush any default rulesets:**
+
+```bash
+sudo nft flush ruleset
+```
+
+**Create the master table container:**
+
+```bash
+sudo nft add table inet hn_table
+```
+
+**Add the base infrastructure chains with default policies:**
+
+```bash
+sudo nft add chain inet hn_table hn_input '{ type filter hook input priority 0 ; policy accept ; }'
+sudo nft add chain inet hn_table hn_forward '{ type filter hook forward priority 0 ; policy accept ; }'
+sudo nft add chain inet hn_table hn_output '{ type filter hook output priority 0 ; policy accept ; }'
+```
+
+**Create auxiliary sub-chains to organize traffic:**
+
+```bash
+sudo nft add chain inet hn_table hn_tcp_chain
+sudo nft add chain inet hn_table hn_udp_chain
+```
+
+**Implement stateful packet tracking rules:**
+
+```bash
+sudo nft add rule inet hn_table hn_input ct state related,established accept
+sudo nft add rule inet hn_table hn_input ct state invalid drop
+```
+
+**Permit the internal loopback interface, ICMP (ping), and IGMP traffic:**
+
+```bash
+sudo nft add rule inet hn_table hn_input iif lo accept
+sudo nft add rule inet hn_table hn_input meta l4proto icmp accept
+sudo nft add rule inet hn_table hn_input ip protocol igmp accept
+```
+
+**Divert new TCP and UDP packets to their respective sorting chains:**
+
+```bash
+sudo nft add rule inet hn_table hn_input meta l4proto udp ct state new jump hn_udp_chain
+sudo nft add rule inet hn_table hn_input 'meta l4proto tcp tcp flags & (fin|syn|rst|ack) == syn ct state new jump hn_tcp_chain'
+```
+
+**Authorize incoming SSH traffic to the headnode:**
+
+```bash
+sudo nft add rule inet hn_table hn_tcp_chain tcp dport 22 accept
+```
+
+**Reject all unhandled traffic matching other protocols:**
+
+```bash
+sudo nft add rule inet hn_table hn_input meta l4proto udp reject
+sudo nft add rule inet hn_table hn_input meta l4proto tcp reject with tcp reset
+sudo nft add rule inet hn_table hn_input counter reject with icmpx port-unreachable
+```
+
+**Configure IP Masquerading (NAT):**
+
+Create the routing hook to rewrite outgoing packets from `compute-01`. Replace `<external_nic>` with your headnode's external internet interface name:
+
+```bash
+sudo nft add table inet my_nat
+sudo nft add chain inet my_nat my_masquerade '{ type nat hook postrouting priority srcnat ; }'
+sudo nft add rule inet my_nat my_masquerade oifname "<external_nic>" masquerade
+```
+
+**Save your operational rulesets into the configurations directory:**
+
+```bash
+sudo mkdir -p /etc/nftables
+sudo nft -s list ruleset | sudo tee /etc/nftables/hn.nft
+```
+
+**Set the input and forward baseline policies to `drop` inside the file for production security:**
+
+```bash
+sudo nano /etc/nftables/hn.nft
+```
+
+Modify the policy values on lines 4 and 5 from `accept` to `drop`:
+
+```
+type filter hook input priority 0; policy drop;
+type filter hook forward priority 0; policy drop;
+```
+
+**Bind this ruleset to the system service configuration. Open `/etc/nftables.conf`:**
+
+```bash
+sudo nano /etc/nftables.conf
+```
+
+Ensure the contents match exactly:
+
+```
+flush ruleset
+include "/etc/nftables/hn.nft"
+```
+
+**Restart and enable the persistence daemon:**
+
+```bash
+sudo systemctl stop nftables
+sudo systemctl start nftables
+sudo systemctl enable nftables
+```
 
 ---
 
-### **Summary**
-You have now laid the foundation. You have two servers with fixed identities (IPs), they know each other's names (Hosts), and they exist in the exact same moment in time (Chrony). The bedrock is solid.
+#### On `compute-01` — Verification:
 
-**Next Chapter:** We will build the **Shared Identity and Storage** layer, making these two separate machines behave as one.
+Test your NAT routing layer. Your isolated compute node should now successfully resolve and ping external addresses through the headnode:
+
+```bash
+ping -c 4 8.8.8.8
+```
+
+---
+
+### Step 5: Configuring Fast Name Resolution (Hosts File)
+
+We hardcode the cluster's internal **phonebook** to eliminate name resolution delays.
+
+**On BOTH nodes:**
+
+Open the file:
+
+```bash
+sudo nano /etc/hosts
+```
+
+Append these exact records to the bottom:
+
+```
+192.168.116.10 headnode
+192.168.116.11 compute-01
+```
+
+Test connectivity by hostname from `compute-01`:
+
+```bash
+ping -c 4 headnode
+```
+
+---
+
+### Step 6: Synchronizing Time (Chrony & Firewall Integration)
+
+We will configure the headnode as an **authoritative time server**, open the port in nftables, and bind `compute-01` to it.
+
+---
+
+#### On `headnode` — NTP Server Configuration:
+
+**Install the time daemon:**
+
+```bash
+sudo apt install chrony -y
+```
+
+**Modify the configuration to allow the private fabric and force isolated accuracy:**
+
+```bash
+sudo nano /etc/chrony/chrony.conf
+```
+
+Add these lines at the **bottom** of the file:
+
+```
+allow 192.168.116.0/24
+local stratum 10
+```
+
+**Restart the service:**
+
+```bash
+sudo systemctl restart chrony
+```
+
+**Open the Firewall Port:**
+
+Open your master firewall ruleset:
+
+```bash
+sudo nano /etc/nftables/hn.nft
+```
+
+Locate your empty `hn_udp_chain` definition and add the UDP port 123 permission:
+
+```
+chain hn_udp_chain {
+        udp dport 123 accept
+}
+```
+
+**Reload the firewall configuration:**
+
+```bash
+sudo nft -f /etc/nftables/hn.nft
+```
+
+---
+
+#### On `compute-01` — NTP Client Configuration:
+
+**Install the time daemon:**
+
+```bash
+sudo apt install chrony -y
+```
+
+**Open the configuration file:**
+
+```bash
+sudo nano /etc/chrony/chrony.conf
+```
+
+Comment out (add a `#` in front of) all default `pool` or `server` lines.
+
+Append your headnode as the absolute time authority using the `iburst` boot optimization:
+
+```
+server headnode iburst
+```
+
+**Restart the service:**
+
+```bash
+sudo systemctl restart chrony
+```
+
+---
+
+### Step 7: Verifying the Time Sync Bedrock
+
+**On `compute-01`**, force an immediate clock stepping adjustment and read your synchronization status:
+
+```bash
+sudo chronyc makestep
+sudo chronyc sources
+```
+
+> **✅ Success Indicator:** The record for `headnode` or `192.168.116.10` must display the `^*` prefix symbol within a few seconds, proving active, accurate synchronization.
+
+**On `headnode`**, verify that the compute node is recorded as a tracking customer:
+
+```bash
+sudo chronyc clients
+```
+
+---
+
+## 1.5. Summary
+
+You have successfully laid down a robust, production-grade bedrock. You have achieved:
+
+| Achievement | Description |
+|---|---|
+| **Static Network Identities** | Both servers have fixed, predictable IP addresses |
+| **Stateful Firewall** | nftables handles automatic packet processing with a drop-default policy |
+| **NAT Routing** | Cluster isolation with internet access routed through the headnode |
+| **Zero-Latency Name Lookups** | Local `/etc/hosts` phonebook eliminates DNS round-trips |
+| **Sub-Millisecond Time Sync** | Chrony ensures all nodes share a single source of truth for time |
+
+> **Next Chapter:** We will build the **Shared Reality** layer — configuring shared storage and a unified identity system, making these two separate machines behave as one cohesive cluster.
