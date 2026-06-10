@@ -453,6 +453,28 @@ ansible -i ~/inventory compute -m ping
 
 ---
 
+#### ⚠️ Critical Prerequisite: Passwordless `sudo` on ALL Nodes
+
+The playbook uses `become: true` which instructs Ansible to elevate privileges using `sudo`. Because Ansible cannot interactively prompt for a sudo password mid-execution across multiple hosts, you **must** configure passwordless `sudo` for the `ubuntu` user on **every node** before running any playbook.
+
+> **Do NOT run `ansible-playbook` with a `sudo` prefix.** Running `sudo ansible-playbook` causes Ansible to use the `root` account's SSH keys (`/root/.ssh/`), not `ubuntu`'s. Since root has no configured keys, every remote connection will fail with `Permission denied (publickey,password)`.
+
+**On BOTH `headnode` and `compute-01`:**
+
+Open the sudoers configuration file using the safe editor:
+```bash
+sudo visudo
+```
+
+Scroll to the very bottom and append this line:
+```text
+ubuntu ALL=(ALL) NOPASSWD:ALL
+```
+
+Save and exit. This allows the `ubuntu` account to execute any `sudo` command without a password prompt, which is the standard configuration in managed HPC cluster environments.
+
+---
+
 #### Automating User Management with an Ansible Playbook:
 
 We will write a playbook to automate creating a new synchronized cluster user account and removing any temporary configurations.
@@ -492,11 +514,16 @@ Paste the following configuration script exactly. Note that we use the `sudo` gr
         remove: true
 ```
 
-**Execute your automated provisioning playbook across the cluster:**
+**Execute your automated provisioning playbook as the normal `ubuntu` user (no `sudo` prefix):**
 
 ```bash
 ansible-playbook -i ~/inventory ~/playbooks/create_sudo_users.yml
 ```
+
+| Common Failure | Cause | Fix |
+|---|---|---|
+| `Missing sudo password` | `NOPASSWD` not set on all nodes | Run `sudo visudo` on each node and add the `NOPASSWD:ALL` line |
+| `Permission denied (publickey,password)` | Ran with `sudo ansible-playbook` (runs as root, no SSH keys) | Remove the `sudo` prefix and run as `ubuntu` user directly |
 
 ---
 
