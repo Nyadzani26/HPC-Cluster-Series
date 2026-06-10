@@ -550,6 +550,108 @@ sudo chronyc clients
 
 ---
 
+### Step 8: VPN Access Overlay (ZeroTier Virtual Networking)
+
+> **⚠️ Coexistence Note:** If you have successfully configured another VPN daemon (like WireGuard) on your systems, disable it before running this step to prevent routing conflicts. Choose one preferred VPN method with your team.
+
+ZeroTier is a software-defined network virtualization solution that creates a secure, encrypted virtual switch over the public internet. By joining your headnode and admin laptops to the same virtual network, you can manage and access the cluster remotely from anywhere in the world without exposing SSH directly to the open web.
+
+```
+ [ Remote Admin Laptop ]             [ headnode (NAT WAN) ]
+   (ZeroTier IP: 10.147.x.x)           (ZeroTier IP: 10.147.x.y)
+             │                                   │
+             └───────► [ ZeroTier Virtual Switch ] ◄─────┘
+                         (Encrypted Peer-to-Peer Tunnel)
+```
+
+| Feature | Benefit |
+|---|---|
+| **P2P Architecture** | Establishes direct encrypted tunnels between devices, minimizing latency |
+| **Cross-Platform** | Works seamlessly across Linux, Windows, macOS, Android, and iOS |
+| **SDN Management** | Centralized web controller for access control, device authorization, and IP assignment |
+
+---
+
+#### 1. Network Creation on the Controller Dashboard
+1. Navigate to [my.zerotier.com](https://my.zerotier.com/) and create a free account.
+2. Go to the **Networks** tab and click **Create A Network**.
+3. Click on the generated Network ID (a 16-character hexadecimal string, e.g., `93afae59635c6f4b`) to open its configuration panel.
+4. Give your network an appropriate Name and Description (e.g., `scc-cluster-vpn`).
+
+---
+
+#### 2. Installing the ZeroTier Agent on the Head Node
+On `headnode`, run the official bootstrap script to install the service:
+```bash
+curl -s https://install.zerotier.com | sudo bash
+```
+
+---
+
+#### 3. Joining the Virtual Network
+**On your host PC (Windows/macOS):**
+Download the ZeroTier client, launch it, and join using your 16-character Network ID.
+
+**On `headnode`:**
+1. Check the local service status and note your unique node address (10-digit ID):
+   ```bash
+   sudo zerotier-cli info
+   ```
+2. Join your custom network ID (replace with your actual network ID):
+   ```bash
+   sudo zerotier-cli join 93afae59635c6f4b
+   ```
+
+---
+
+#### 4. Authorizing Devices on the Dashboard
+By default, private networks require manual authorization for security:
+1. Return to the **Members** section on your ZeroTier dashboard.
+2. Check the box under the **Auth?** column next to your Laptop and your `headnode` identities.
+3. Assign a name and description to each authorized node (e.g., `gift-laptop` and `cluster-headnode`).
+4. Note down the **Managed IP** assigned to the headnode (e.g., `10.147.17.x`).
+
+---
+
+#### 5. Open ZeroTier Ports in the Gateway Firewall
+ZeroTier uses UDP port `9993` for peer-to-peer pathfinding and encapsulation. You must authorize this port on the headnode to allow incoming VPN tunnels.
+
+**On `headnode`:**
+Open your master firewall configuration:
+```bash
+sudo nano /etc/nftables/hn.nft
+```
+
+Locate your `hn_udp_chain` and insert the UDP port `9993` permission rule:
+```
+chain hn_udp_chain {
+        udp dport 123 accept
+        udp dport 9993 accept
+}
+```
+
+Reload the nftables firewall to apply the changes:
+```bash
+sudo nft -f /etc/nftables/hn.nft
+```
+
+---
+
+#### 6. Confirming Status and Verifying Connection
+Confirm the network status has updated from `ACCESS_DENIED` to `OK`:
+```bash
+sudo zerotier-cli listnetworks
+```
+
+**Test Connectivity:**
+From your remote admin laptop, ping the headnode's ZeroTier **Managed IP**:
+```bash
+ping <headnode_zerotier_ip>
+```
+If you get successful responses, your secure VPN tunnel is fully operational!
+
+---
+
 ## 1.5. Summary
 
 You have successfully laid down a robust, production-grade bedrock. You have achieved:
@@ -561,5 +663,6 @@ You have successfully laid down a robust, production-grade bedrock. You have ach
 | **NAT Routing** | Cluster isolation with internet access routed through the headnode |
 | **Zero-Latency Name Lookups** | Local `/etc/hosts` phonebook eliminates DNS round-trips |
 | **Sub-Millisecond Time Sync** | Chrony ensures all nodes share a single source of truth for time |
+| **Overlay VPN Access** | ZeroTier securely connects external administrative laptops to the private cluster |
 
 > **Next Chapter:** We will build the **Shared Reality** layer — configuring shared storage and a unified identity system, making these two separate machines behave as one cohesive cluster.
