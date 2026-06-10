@@ -85,13 +85,13 @@ To replicate the CHPC Student Cluster Competition architecture (Sebowa Cloud env
 ```
   [ Internet / VMware NAT ]
               │
-         ens33 (DHCP — assigned by VMware)
+          ens33 (DHCP — assigned by VMware)
               ▼
        ┌──────────────┐
        │   headnode   │ ──► [ Stateful nftables Firewall ]
        └──────────────┘
               ▲
-         ens34 (static — 10.100.0.10)
+          ens37 (static — 10.100.0.10)
               │
   [ Isolated Host-Only Virtual Switch ]
               │
@@ -101,9 +101,9 @@ To replicate the CHPC Student Cluster Competition architecture (Sebowa Cloud env
 | Interface | Role |
 |---|---|
 | **ens33** | VMware-managed DHCP uplink — gives the headnode internet access |
-| **ens34** | Static cluster fabric (`10.100.0.0/24`) — private communication between all nodes |
+| **ens37** | Static cluster fabric (`10.100.0.0/24`) — private communication between all nodes |
 
-> **Key Design Principle:** Compute nodes sit **exclusively** on the cluster fabric (`ens34` side). They have no direct uplink and must route through the headnode via **Network Address Translation (NAT)** to reach the internet.
+> **Key Design Principle:** Compute nodes sit **exclusively** on the cluster fabric (`ens37` side). They have no direct uplink and must route through the headnode via **Network Address Translation (NAT)** to reach the internet.
 
 ---
 
@@ -133,7 +133,7 @@ Because VMware assigns random names to network cards, you must look up your spec
 ip addr
 ```
 
-Identify your interface names (e.g., `ens33`, `ens34`, `enp2s1`). Note them down — you will need them throughout this lab.
+Identify your interface names (e.g., `ens33`, `ens37`, `enp2s1`). Note them down — you will need them throughout this lab.
 
 ---
 
@@ -149,7 +149,7 @@ Open the Netplan configuration file:
 sudo nano /etc/netplan/50-cloud-init.yaml
 ```
 
-Wipe the file and replace it with the following. `ens33` gets its address from VMware automatically; `ens34` is hardcoded as the cluster fabric interface:
+Wipe the file and replace it with the following. `ens33` gets its address from VMware automatically; `ens37` is hardcoded as the cluster fabric interface:
 
 ```yaml
 network:
@@ -157,7 +157,7 @@ network:
     ethernets:
         ens33:
             dhcp4: true
-        ens34:
+        ens37:
             dhcp4: false
             addresses:
             - 10.100.0.10/24
