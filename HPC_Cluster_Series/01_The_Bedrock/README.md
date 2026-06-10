@@ -118,8 +118,26 @@ To replicate the CHPC Student Cluster Competition architecture (Sebowa Cloud env
 | **Hypervisor** | VMware Workstation |
 | **OS** | Ubuntu Server 24.04 LTS (Minimal Install) on two VMs |
 | **VM Hostnames** | `headnode` and `compute-01` |
-| **headnode NICs** | Two network adapters: one NAT/Bridged, one Host-Only |
+| **headnode NICs** | Two network adapters: one NAT (Internet), one Host-Only (Cluster fabric) |
 | **compute-01 NICs** | One network adapter: Host-Only only |
+
+---
+
+#### 🛠️ Configuring VMware Virtual Network Adapters
+To configure the dual-homed network architecture, you must manually adjust the virtual hardware of your VMs:
+
+1. **Power off or Suspend** both VMs in VMware Workstation.
+2. **For `headnode` settings:**
+   - Right-click the `headnode` VM and select **Settings** (or *Edit Virtual Machine Settings*).
+   - In the hardware list, click the **Add...** button at the bottom.
+   - Select **Network Adapter** from the wizard list and click **Finish**.
+   - You will now see two network adapters:
+     - **Network Adapter 1 (existing):** Keep configured as **NAT** (to provide public internet uplink).
+     - **Network Adapter 2 (new):** Select it, and change its connection type on the right to **Host-only: A private network shared with the host** (for the isolated cluster fabric).
+3. **For `compute-01` settings:**
+   - Right-click the `compute-01` VM and select **Settings**.
+   - Select its single **Network Adapter** and change its connection type to **Host-only** (so it exists solely on the private cluster switch).
+4. Power both VMs back on.
 
 ---
 
@@ -133,7 +151,9 @@ Because VMware assigns random names to network cards, you must look up your spec
 ip addr
 ```
 
-Identify your interface names (e.g., `ens33`, `ens37`, `enp2s1`). Note them down — you will need them throughout this lab.
+Identify your interface names (e.g., `ens33`, `ens37`, `enp2s1`). Note them down — you will need them throughout this lab. Usually:
+- `headnode`: `ens33` is NAT (external) and `ens37` is Host-only (internal).
+- `compute-01`: `ens33` is Host-only (internal).
 
 ---
 
@@ -185,7 +205,7 @@ network:
             - to: default
               via: 10.100.0.10
             nameservers:
-                addresses:
+                addresses: [8.8.8.8]
 ```
 
 #### Apply Changes on Both Nodes:
@@ -193,6 +213,28 @@ network:
 ```bash
 sudo netplan apply
 ```
+
+> **⚡ SSH ProxyJump Configuration (From your Windows Host):**
+> Because `compute-01` resides on an isolated Host-Only network, your Windows PC cannot reach it directly. You must use the `headnode` as a jump host to reach it.
+>
+> Open **PowerShell** on your Windows host and run:
+> ```powershell
+> ssh -J ubuntu@<headnode_external_ip> ubuntu@10.100.0.11
+> ```
+> *(Replace `<headnode_external_ip>` with your actual `ens33` IP from the headnode, e.g. `192.168.116.130`).*
+>
+> Alternatively, for seamless access, open your Windows SSH configuration file (`notepad $HOME\.ssh\config`) and define:
+> ```text
+> Host headnode
+>     HostName <headnode_external_ip>
+>     User ubuntu
+> 
+> Host compute-01
+>     HostName 10.100.0.11
+>     User ubuntu
+>     ProxyJump headnode
+> ```
+> Once saved, you can log directly into the compute node by running `ssh compute-01` from PowerShell!
 
 ---
 
