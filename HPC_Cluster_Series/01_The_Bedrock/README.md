@@ -83,27 +83,27 @@ In modern Linux systems, **Chrony** is the preferred implementation because it s
 To replicate the CHPC Student Cluster Competition architecture (Sebowa Cloud environment) inside **VMware Workstation**, we must move away from flat networks. We segregate traffic using a **dual-homed Head Node topology**:
 
 ```
-  [ Internet / External LAN ]
+  [ Internet / VMware NAT ]
               │
-      <external_nic> (e.g., ens33 - DHCP/Static WAN)
+         ens33 (DHCP — assigned by VMware)
               ▼
        ┌──────────────┐
        │   headnode   │ ──► [ Stateful nftables Firewall ]
        └──────────────┘
               ▲
-      <internal_nic> (e.g., ens34 - 192.168.116.10)
+         ens34 (static — 10.100.0.10)
               │
-  [ Isolated Private Virtual Switch ]
+  [ Isolated Host-Only Virtual Switch ]
               │
-              ├──► compute-01 (192.168.116.11)
+              ├──► compute-01 (10.100.0.11)
 ```
 
-| Network | Purpose |
+| Interface | Role |
 |---|---|
-| **Public / External** | Connects the headnode to the outside world for remote administrative access and internet downloads |
-| **Private Cluster Network** | An isolated host-only virtual switch (`192.168.116.0/24`) where cluster nodes communicate exclusively |
+| **ens33** | VMware-managed DHCP uplink — gives the headnode internet access |
+| **ens34** | Static cluster fabric (`10.100.0.0/24`) — private communication between all nodes |
 
-> **Key Design Principle:** Compute nodes sit **exclusively** on the private network. They have no direct external cable and must route through the headnode via **Network Address Translation (NAT)** to access the internet.
+> **Key Design Principle:** Compute nodes sit **exclusively** on the cluster fabric (`ens34` side). They have no direct uplink and must route through the headnode via **Network Address Translation (NAT)** to reach the internet.
 
 ---
 
@@ -149,18 +149,18 @@ Open the Netplan configuration file:
 sudo nano /etc/netplan/50-cloud-init.yaml
 ```
 
-Wipe the file and replace it with the following blueprint. Replace `<external_nic>` and `<internal_nic>` with your actual interface names from Step 1:
+Wipe the file and replace it with the following. `ens33` gets its address from VMware automatically; `ens34` is hardcoded as the cluster fabric interface:
 
 ```yaml
 network:
     version: 2
     ethernets:
-        <external_nic>:
+        ens33:
             dhcp4: true
-        <internal_nic>:
+        ens34:
             dhcp4: false
             addresses:
-            - 192.168.116.10/24
+            - 10.100.0.10/24
 ```
 
 #### On `compute-01`:
@@ -171,19 +171,19 @@ Open the Netplan configuration file:
 sudo nano /etc/netplan/50-cloud-init.yaml
 ```
 
-Configure its single private interface to route all internet traffic through the headnode:
+`compute-01` has only one NIC (`ens33`), connected to the Host-Only switch. Configure it with a static address and route all traffic through the headnode:
 
 ```yaml
 network:
     version: 2
     ethernets:
-        <internal_nic>:
+        ens33:
             dhcp4: false
             addresses:
-            - 192.168.116.11/24
+            - 10.100.0.11/24
             routes:
             - to: default
-              via: 192.168.116.10
+              via: 10.100.0.10
             nameservers:
                 addresses:
 ```
@@ -303,12 +303,12 @@ sudo nft add rule inet hn_table hn_input counter reject with icmpx port-unreacha
 
 **Configure IP Masquerading (NAT):**
 
-Create the routing hook to rewrite outgoing packets from `compute-01`. Replace `<external_nic>` with your headnode's external internet interface name:
+Create the routing hook to rewrite outgoing packets from `compute-01` as they leave through `ens33` (the VMware DHCP uplink):
 
 ```bash
 sudo nft add table inet my_nat
 sudo nft add chain inet my_nat my_masquerade '{ type nat hook postrouting priority srcnat ; }'
-sudo nft add rule inet my_nat my_masquerade oifname "<external_nic>" masquerade
+sudo nft add rule inet my_nat my_masquerade oifname "ens33" masquerade
 ```
 
 **Save your operational rulesets into the configurations directory:**
@@ -379,8 +379,8 @@ sudo nano /etc/hosts
 Append these exact records to the bottom:
 
 ```
-192.168.116.10 headnode
-192.168.116.11 compute-01
+10.100.0.10 headnode
+10.100.0.11 compute-01
 ```
 
 Test connectivity by hostname from `compute-01`:
@@ -414,7 +414,7 @@ sudo nano /etc/chrony/chrony.conf
 Add these lines at the **bottom** of the file:
 
 ```
-allow 192.168.116.0/24
+allow 10.100.0.0/24
 local stratum 10
 ```
 
@@ -487,7 +487,7 @@ sudo chronyc makestep
 sudo chronyc sources
 ```
 
-> **✅ Success Indicator:** The record for `headnode` or `192.168.116.10` must display the `^*` prefix symbol within a few seconds, proving active, accurate synchronization.
+> **✅ Success Indicator:** The record for `headnode` or `10.100.0.10` must display the `^*` prefix symbol within a few seconds, proving active, accurate synchronization.
 
 **On `headnode`**, verify that the compute node is recorded as a tracking customer:
 
