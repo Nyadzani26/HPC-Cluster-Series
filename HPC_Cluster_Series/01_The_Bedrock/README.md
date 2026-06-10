@@ -360,17 +360,28 @@ sudo mkdir -p /etc/nftables
 sudo nft -s list ruleset | sudo tee /etc/nftables/hn.nft
 ```
 
-**Set the input and forward baseline policies to `drop` inside the file for production security:**
+**Set the input and forward baseline policies to `drop` inside the file for production security, and add forwarding rules to allow traffic from the cluster subnet:**
 
 ```bash
 sudo nano /etc/nftables/hn.nft
 ```
 
-Modify the policy values on lines 4 and 5 from `accept` to `drop`:
+Modify the `hn_input` and `hn_forward` chains inside the file to look like this (ensure you add the state tracking and source IP forwarding rule in the `hn_forward` chain):
 
-```
-type filter hook input priority 0; policy drop;
-type filter hook forward priority 0; policy drop;
+```text
+        chain hn_input {
+                type filter hook input priority filter; policy drop;
+                ct state established,related accept
+                ...
+        }
+
+        chain hn_forward {
+                type filter hook forward priority filter; policy drop;
+                # Allow packets that belong to existing connections to pass
+                ct state established,related accept
+                # Allow new outgoing connections from the private network to the internet
+                ip saddr 10.100.0.0/24 accept
+        }
 ```
 
 **Bind this ruleset to the system service configuration. Open `/etc/nftables.conf`:**
