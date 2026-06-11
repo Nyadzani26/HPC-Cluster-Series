@@ -403,6 +403,16 @@ Replace the **entire contents** of the file with the following. Read every line 
 # Architecture tag: ubuntu_atlas
 # ======================================================================
 
+# ---- Shell and Utilities --------------------------------------------
+SHELL        = /bin/sh
+CD           = cd
+CP           = cp
+LN_S         = ln -s
+MKDIR        = mkdir
+RM           = /bin/rm -f
+TOUCH        = touch
+
+# ---- Architecture ---------------------------------------------------
 ARCH         = ubuntu_atlas
 
 # ---- Directory Layout -----------------------------------------------
