@@ -136,7 +136,7 @@ Lmod must be compiled from source. Since your compute nodes have more CPU cores,
 
 ```bash
 sudo apt update
-sudo apt install -y git gcc make
+sudo apt install -y git gcc make pkg-config
 ```
 
 ---
@@ -149,14 +149,15 @@ Lmod is written in Lua. Every node that will **run** Lmod commands (not just the
 
 ```bash
 sudo apt update
-sudo apt install -y tcl tcl-dev lua5.3 lua-posix bc
+sudo apt install -y tcl tcl-dev lua5.3 liblua5.3-dev lua-filesystem-dev lua-posix lua-posix-dev bc
 ```
 
 | Package | Purpose |
 |---|---|
 | `tcl` / `tcl-dev` | TCL scripting runtime and development headers (used internally by Lmod) |
-| `lua5.3` | The Lua 5.3 interpreter — Lmod's execution engine |
-| `lua-posix` | POSIX system call bindings for Lua |
+| `lua5.3` / `liblua5.3-dev` | The Lua 5.3 interpreter and development header files — Lmod's execution engine |
+| `lua-filesystem-dev` | Filesystem library development files for Lua |
+| `lua-posix` / `lua-posix-dev` | POSIX system call bindings and development headers for Lua |
 | `bc` | Arbitrary precision calculator used in some Lmod scripts |
 
 ---
