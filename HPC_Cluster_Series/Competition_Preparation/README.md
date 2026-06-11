@@ -201,7 +201,7 @@ make install
 
 ### Step 4: Activating Lmod in Your Shell
 
-To make the `module` command available in your current terminal session, you must source Lmod's shell initialization script:
+To make the `module` and `ml` commands available in your current terminal session, you must source Lmod's shell initialization script:
 
 ```bash
 source ~/lmod/lmod/lmod/init/profile
@@ -213,11 +213,10 @@ To make this permanent so that Lmod loads automatically every time you open a ne
 echo 'source ~/lmod/lmod/lmod/init/profile' >> ~/.profile
 ```
 
-Apply it to your current session:
-
-```bash
-source ~/.profile
-```
+> **NFS & Terminal Sessions Note:** Because your `/home` directory is NFS-shared, appending this command to `~/.profile` on one node updates it for **all** nodes. However, any active terminal sessions that were already open (such as your terminal on the `headnode`) will not automatically refresh. You must run the refresh command on **both** the headnode and compute nodes in any currently active terminals:
+> ```bash
+> source ~/.profile
+> ```
 
 ---
 
