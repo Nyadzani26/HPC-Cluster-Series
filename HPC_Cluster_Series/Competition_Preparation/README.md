@@ -419,11 +419,10 @@ MPinc        = -I$(MPdir)/include
 MPlib        = $(MPdir)/lib/libmpi.so
 
 # ---- BLAS Configuration (ATLAS) --------------------------------------
-# Ubuntu stores ATLAS libraries in /usr/lib/x86_64-linux-gnu/atlas
-# libsatlas.so = single-threaded ATLAS (CBLAS interface)
-LAdir        = /usr/lib/x86_64-linux-gnu/atlas
+# Ubuntu stores ATLAS and CBLAS libraries in /usr/lib/x86_64-linux-gnu
+LAdir        = /usr/lib/x86_64-linux-gnu
 LAinc        =
-LAlib        = $(LAdir)/libsatlas.so
+LAlib        = $(LAdir)/libcblas.so $(LAdir)/libatlas.so
 
 # ---- HPL Build Options -----------------------------------------------
 F2CDEFS      =
