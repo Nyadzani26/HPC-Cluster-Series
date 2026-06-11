@@ -406,7 +406,7 @@ Replace the **entire contents** of the file with the following. Read every line 
 ARCH         = ubuntu_atlas
 
 # ---- Directory Layout -----------------------------------------------
-TOPdir       = $(HOME)/hpl-2.3
+TOPdir       = $(HOME)/hpl
 INCdir       = $(TOPdir)/include
 BINdir       = $(TOPdir)/bin/$(ARCH)
 LIBdir       = $(TOPdir)/lib/$(ARCH)
@@ -419,10 +419,10 @@ MPinc        = -I$(MPdir)/include
 MPlib        = $(MPdir)/lib/libmpi.so
 
 # ---- BLAS Configuration (ATLAS) --------------------------------------
-# Ubuntu stores ATLAS and CBLAS libraries in /usr/lib/x86_64-linux-gnu
-LAdir        = /usr/lib/x86_64-linux-gnu
+# Ubuntu stores ATLAS and CBLAS libraries in /usr/lib/x86_64-linux-gnu/atlas
+LAdir        = /usr/lib/x86_64-linux-gnu/atlas/
 LAinc        =
-LAlib        = $(LAdir)/libcblas.so $(LAdir)/libatlas.so
+LAlib        = $(LAdir)/libblas.so $(LAdir)/liblapack.so
 
 # ---- HPL Build Options -----------------------------------------------
 F2CDEFS      =
@@ -439,7 +439,7 @@ LINKER       = $(CC)
 LINKFLAGS    = $(CCFLAGS)
 
 # ---- Utility Programs ------------------------------------------------
-AR           = ar
+ARCHIVER     = ar
 ARFLAGS      = r
 RANLIB       = echo
 MAKE         = make
