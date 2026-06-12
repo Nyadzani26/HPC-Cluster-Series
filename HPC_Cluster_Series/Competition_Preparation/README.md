@@ -794,9 +794,20 @@ Update the architecture identifier and library paths to point to your custom-com
 # Architecture tag: custom_blas_mpi
 # ======================================================================
 
+# ---- Shell and Utilities --------------------------------------------
+SHELL        = /bin/sh
+CD           = cd
+CP           = cp
+LN_S         = ln -s
+MKDIR        = mkdir
+RM           = /bin/rm -f
+TOUCH        = touch
+
+# ---- Architecture ---------------------------------------------------
 ARCH         = custom_blas_mpi
 
-TOPdir       = $(HOME)/hpl-2.3
+# ---- Directory Layout -----------------------------------------------
+TOPdir       = $(HOME)/hpl
 INCdir       = $(TOPdir)/include
 BINdir       = $(TOPdir)/bin/$(ARCH)
 LIBdir       = $(TOPdir)/lib/$(ARCH)
@@ -812,6 +823,7 @@ LAdir        = $(HOME)/opt/openblas
 LAinc        =
 LAlib        = $(LAdir)/lib/libopenblas.a
 
+# ---- HPL Build Options -----------------------------------------------
 F2CDEFS      =
 HPL_INCLUDES = -I$(INCdir) -I$(INCdir)/$(ARCH) $(LAinc) $(MPinc)
 HPL_LIBS     = $(HPLlib) $(LAlib) $(MPlib)
@@ -828,7 +840,8 @@ LDFLAGS      = -O3 -fopenmp
 LINKER       = $(CC)
 LINKFLAGS    = $(LDFLAGS)
 
-AR           = ar
+# ---- Utility Programs ------------------------------------------------
+ARCHIVER     = ar
 ARFLAGS      = r
 RANLIB       = echo
 MAKE         = make
