@@ -564,52 +564,6 @@ Round down to the nearest multiple of your NB value. Set N to approximately **14
 
 `NB` defines the chunk size into which the matrix is divided for distribution and computation. The optimal NB value depends on your CPU's cache architecture. Common good starting values are `128`, `192`, or `232`. For best performance, **N must be a multiple of NB**.
 
-#### P × Q — Process Grid
-
-`P` and `Q` define how MPI processes are arranged in a 2D grid. `P × Q` must equal the total number of MPI processes you launch. For a single-node run with 1 process, `P=1` and `Q=1`. For a 2-node run with 2 total processes, valid options are `P=1, Q=2` or `P=2, Q=1`.
-
-> **Recommendation:** Keep P ≤ Q, and choose values where Q/P is close to 1 (square grid) for best performance.
-
-**Edit `HPL.dat` for a single-node baseline run on a 2 GB VM:**
-
-```
-HPLinpack benchmark input file
-Innovative Computing Laboratory, University of Tennessee
-HPL.out      output file name (if any)
-6            device out (6=stdout,7=stderr,file)
-1            # of problems sizes (N)
-14000        Ns
-1            # of NBs
-232          NBs
-0            PMAP process mapping (0=Row-,1=Column-major)
-1            # of process grids (P x Q)
-1            Ps
-1            Qs
-16.0         threshold
-3            # of panel fact
-0 1 2        PFACTs (0=left, 1=Crout, 2=Right)
-2            # of recursive stopping criterium
-2 4          NBMINs (>= 1)
-1            # of panels in recursion
-2            NDIVs
-3            # of recursive panel fact.
-0 1 2        RFACTs (0=left, 1=Crout, 2=Right)
-1            # of broadcast
-0            BCASTs (0=1rg,1=1rM,2=2rg,3=2rM,4=Lng,5=LnM)
-1            # of lookahead depth
-0            DEPTHs (>=0)
-2            SWAP (0=bin-exch,1=long,2=mix)
-64           swapping threshold
-0            L1 in (0=transposed,1=no-transposed) form
-0            U  in (0=transposed,1=no-transposed) form
-1            Equilibration (0=no,1=yes)
-8            memory alignment in double (> 0)
-```
-
----
-
-### Step 6: Run Your Baseline HPL Benchmark
-
 From your `bin/ubuntu_atlas` directory, run the benchmark:
 
 ```bash
@@ -1177,137 +1131,388 @@ Visit **[top500.org](https://top500.org/lists/top500/)** and compare your `R_Max
 
 ## 3.8. Running HPL Across Multiple Nodes
 
-With both compute nodes registered, NFS-mounted, and MUNGE-authenticated, you can now distribute the HPL workload across the entire cluster. This requires coordinating MPI across the private network fabric.
+With both compute nodes registered, NFS-mounted, and MUNGE-authenticated, you can now distribute the HPL workload across all three machines in your cluster — `headnode`, `compute-01`, and `compute-02`. This section walks through every step required to get MPI communicating correctly across nodes and HPL running at full cluster scale.
+
+> **Before you start:** Read this section completely before executing any commands. Multi-node MPI failures are almost always caused by environment or network configuration problems, not HPL itself. Understanding why each step exists will save you hours of debugging.
 
 ---
 
 ### Step 1: Verify Cluster Prerequisites
 
-Before proceeding, confirm all the following from the `headnode`:
+Every node must be reachable and the shared filesystem must be mounted. Run these verification commands from the `headnode` before proceeding:
 
 ```bash
-# Passwordless SSH to both compute nodes
+# Passwordless SSH must work to all nodes
 ssh compute-01 "echo compute-01 OK"
 ssh compute-02 "echo compute-02 OK"
 
-# NFS home is mounted on both
+# NFS home directory must be mounted on all compute nodes
 ssh compute-01 "df -h | grep home"
 ssh compute-02 "df -h | grep home"
 
-# Required libraries present on all nodes
+# Your custom OpenBLAS library must be visible from all nodes via NFS
 ssh compute-01 "ls ~/opt/openblas/lib/libopenblas.a"
 ssh compute-02 "ls ~/opt/openblas/lib/libopenblas.a"
+
+# Your custom OpenMPI binary must be visible from all nodes via NFS
+ssh compute-01 "ls ~/opt/openmpi/bin/mpirun"
+ssh compute-02 "ls ~/opt/openmpi/bin/mpirun"
 ```
 
-All commands must succeed without password prompts before continuing.
+All commands must succeed without password prompts before continuing. If any fail, go back to Chapters 1 and 2.
 
 ---
 
-### Step 2: Create the MPI Hosts File
+### Step 2: Fix the Environment for Non-Interactive SSH Shells
 
-The MPI hosts file (also called a machinefile) tells `mpirun` which machines to use and how many processes to allocate on each.
+This is the most commonly missed step and the number one reason multi-node MPI fails silently.
 
-Create the file in your HPL binary directory:
+**Why this matters:** When `mpirun` launches worker processes on remote nodes, it connects via SSH in **non-interactive mode** — meaning it starts a bare shell without loading most configuration files. Ubuntu's `~/.bashrc` file contains an early guard that exits immediately for non-interactive shells:
 
 ```bash
-cd ~/hpl-2.3/bin/custom_blas_mpi
-nano hosts
+# If not running interactively, don't do anything
+case $- in
+    *i*) ;;
+      *) return;;
+esac
 ```
 
-Add your compute nodes. The `slots` value specifies the maximum number of MPI processes `mpirun` may launch on that node:
+Any environment variables you append to the bottom of `~/.bashrc` (below this guard) are **never evaluated** by the remote MPI shell. This means the remote `orted` daemon starts without your custom `$PATH`, falls back to `/usr/bin/mpirun` (the system-installed OpenMPI), and immediately crashes because the headnode and compute nodes are running different MPI versions.
+
+**The fix:** Export your environment variables at the **very top** of `~/.bashrc`, before the interactive guard. Run this command **once** on the headnode — because your home directory is NFS-shared, it updates the file for all nodes simultaneously:
+
+```bash
+# Back up your current .bashrc first
+cp ~/.bashrc ~/.bashrc.bak
+
+# Prepend the environment exports to the very top of .bashrc
+{
+  echo 'export MPI_HOME=$HOME/opt/openmpi'
+  echo 'export OPENBLAS_HOME=$HOME/opt/openblas'
+  echo 'export PATH=$MPI_HOME/bin:$PATH'
+  echo 'export LD_LIBRARY_PATH=$MPI_HOME/lib:$OPENBLAS_HOME/lib:$LD_LIBRARY_PATH'
+  cat ~/.bashrc.bak
+} > /tmp/new_bashrc && mv /tmp/new_bashrc ~/.bashrc
+```
+
+**Verify the fix works for non-interactive SSH** — this is the exact same type of shell that `mpirun` will use:
+
+```bash
+ssh compute-01 "which mpirun"
+ssh compute-02 "which mpirun"
+ssh headnode "which mpirun"
+```
+
+All three must return `/home/ubuntu/opt/openmpi/bin/mpirun`. If any still return `/usr/bin/mpirun`, the environment export is not at the top of `~/.bashrc`. Do not proceed until all three return the correct path.
+
+---
+
+### Step 3: Open the Firewall for MPI Traffic
+
+Your `headnode` runs a stateful `nftables` firewall (configured in Chapter 1) with a default `drop` policy on incoming connections. When `mpirun` distributes work across nodes, each MPI process opens **dynamic high-numbered TCP ports** to communicate with its peers. These ports are not predictable in advance and cannot be individually whitelisted.
+
+The correct approach is to **trust all traffic originating from the private cluster subnet** (`10.100.0.0/24`). Any machine that can reach the headnode on this network is already inside your cluster — it has passed your physical network boundary.
+
+Write a clean, corrected firewall configuration to the headnode using `tee` to overwrite the file cleanly (this avoids accidentally stacking duplicate rules, which silently breaks the firewall):
+
+```bash
+sudo tee /etc/nftables/hn.nft << 'EOF'
+table inet hn_table {
+        chain hn_input {
+                type filter hook input priority filter; policy drop;
+                ct state established,related accept
+                ct state invalid drop
+                iifname "lo" accept
+
+                # Trust all traffic from the internal cluster subnet (MPI uses dynamic ports)
+                ip saddr 10.100.0.0/24 accept
+
+                meta l4proto icmp accept
+                ip protocol igmp accept
+                meta l4proto udp ct state new jump hn_udp_chain
+                tcp flags syn / fin,syn,rst,ack ct state new jump hn_tcp_chain
+                meta l4proto udp reject
+                meta l4proto tcp reject with tcp reset
+                counter reject
+        }
+
+        chain hn_forward {
+                type filter hook forward priority filter; policy accept;
+        }
+
+        chain hn_output {
+                type filter hook output priority filter; policy accept;
+        }
+
+        chain hn_tcp_chain {
+                tcp dport 22 accept
+                tcp dport 2049 accept
+        }
+
+        chain hn_udp_chain {
+                udp dport 123 accept
+        }
+}
+table inet my_nat {
+        chain my_masquerade {
+                type nat hook postrouting priority srcnat; policy accept;
+                oifname "ens33" masquerade
+        }
+}
+EOF
+```
+
+Apply and reload the ruleset:
+
+```bash
+sudo nft -f /etc/nftables/hn.nft
+```
+
+Verify the clean ruleset was loaded. You should see exactly one copy of each rule, with `ip saddr 10.100.0.0/24 accept` present in the `hn_input` chain:
+
+```bash
+sudo nft list ruleset
+```
+
+> **Common mistake:** If you run `sudo nft -f /etc/nftables/hn.nft` multiple times without flushing first, nftables will append the rules on top of existing ones. This creates duplicate reject rules that fire before your accept rules, silently blocking all MPI traffic. Always use `sudo tee` to overwrite the file, then load it once.
+
+---
+
+### Step 4: Create the MPI Hosts File
+
+The hosts file tells `mpirun` which machines to use and how many MPI processes to allocate on each node. We include all three nodes — `headnode`, `compute-01`, and `compute-02` — to maximise the total number of cores available to HPL.
+
+Navigate to your HPL binary directory:
+
+```bash
+cd ~/hpl/bin/custom_blas_mpi
+```
+
+Create the hosts file:
+
+```bash
+nano hostfile
+```
+
+Add all three nodes, setting `slots` to the number of physical CPU cores on each:
 
 ```text
+headnode   slots=2
 compute-01 slots=2
 compute-02 slots=2
 ```
 
-> Adjust the `slots` value to match the number of physical CPU cores on each compute node. Check with `ssh compute-01 nproc`.
+> Check how many cores each node has with `nproc` or `ssh compute-01 nproc`. Set `slots` to match the physical core count — do not set `slots` higher than available cores or you will oversubscribe the CPU and performance will collapse.
+
+Save and exit (`Ctrl+O`, `Enter`, `Ctrl+X`).
 
 ---
 
-### Step 3: Configure Environment for Remote MPI Shells
+### Step 5: Calculate a Safe Problem Size (N) for Three Nodes
 
-When `mpirun` spawns processes on remote compute nodes, it opens a fresh SSH shell. This shell must have the correct `$PATH` and `$LD_LIBRARY_PATH` configured to find your custom OpenMPI and OpenBLAS libraries. Configuration in `~/.profile` is loaded by login shells but not always by non-interactive SSH shells.
+This is a critical calculation. Setting `N` too large causes the benchmark to exhaust physical RAM and begin swapping data to disk, which can drop your GFLOPS score by 80% or more and make runs take 10+ minutes.
 
-Append the following to your `~/.profile` on the headnode (which is NFS-shared to all nodes):
+**Each node has 2 GB of RAM.** After the Linux OS and background services consume their share, approximately **1.4 GB is available per node** for the benchmark. Across three nodes, your total usable memory is approximately **4.2 GB**.
 
-```bash
-nano ~/.profile
+Target using **80%** of that for the HPL matrix:
+
+```
+Usable for matrix = 0.80 × 4.2 GB = 3.36 GB
+N² × 8 bytes      = 3.36 × 1024³ bytes
+N²                = 3.36 × 1024³ / 8 = 450,971,443
+N                 = √450,971,443 ≈ 21,237
 ```
 
-Add these lines at the bottom:
+Round down to the nearest multiple of your block size (`NB=224`):
 
-```bash
-# Custom OpenMPI and OpenBLAS environment
-export MPI_HOME=$HOME/opt/openmpi
-export OPENBLAS_HOME=$HOME/opt/openblas
-export PATH=$MPI_HOME/bin:$PATH
-export LD_LIBRARY_PATH=$MPI_HOME/lib:$OPENBLAS_HOME/lib:$LD_LIBRARY_PATH
+```
+21,237 / 224 = 94.8 → round down to 94
+N = 94 × 224 = 21,056
 ```
 
-Apply the configuration to your current session:
+Use **`N = 21000`** as your starting value. This is conservative enough to avoid swapping while being large enough to keep all six cores busy.
 
-```bash
-source ~/.profile
-```
+> **Warning:** Do not be tempted to use a large `N` like 28000 or 30000. That would require 5–6 GB of RAM for the matrix alone — more than your entire cluster has. The benchmark will swap to disk on all nodes simultaneously and your score will collapse to single-digit GFLOPS.
 
 ---
 
-### Step 4: Configure HPL.dat for Multi-Node Execution
+### Step 6: Configure HPL.dat for a Three-Node Run
 
-The `P × Q` grid must now equal the total number of MPI processes across all nodes. If you use 2 processes per node across 2 nodes, you need 4 total processes and a valid `P × Q` decomposition.
+With 3 nodes × 2 cores each = **6 total MPI processes**, your process grid `P × Q` must equal 6. The best factorization is `P=2, Q=3` — this keeps the grid as close to square as possible while satisfying the convention `P ≤ Q`, which minimises load imbalance across the process rows and columns.
+
+Write the following `HPL.dat` to your binary directory:
 
 ```bash
-nano HPL.dat
+nano ~/hpl/bin/custom_blas_mpi/HPL.dat
 ```
 
-Update the process grid parameters:
-
 ```
+HPLinpack benchmark input file
+Innovative Computing Laboratory, University of Tennessee
+HPL.out      output file name (if any)
+6            device out (6=stdout,7=stderr,file)
+1            # of problems sizes (N)
+21000        Ns
+1            # of NBs
+224          NBs
+1            PMAP process mapping (0=Row-,1=Column-major)
 1            # of process grids (P x Q)
 2            Ps
-2            Qs
+3            Qs
+16.0         threshold
+1            # of panel fact
+2            PFACTs (0=left, 1=Crout, 2=Right)
+1            # of recursive stopping criterium
+4            NBMINs (>= 1)
+1            # of panels in recursion
+2            NDIVs
+1            # of recursive panel fact.
+2            RFACTs (0=left, 1=Crout, 2=Right)
+1            # of broadcast
+2            BCASTs (0=1rg,1=1rM,2=2rg,3=2rM,4=Lng,5=LnM)
+1            # of lookahead depth
+0            DEPTHs (>=0)
+2            SWAP (0=bin-exch,1=long,2=mix)
+64           swapping threshold
+0            L1 in (0=transposed,1=no-transposed) form
+0            U  in (0=transposed,1=no-transposed) form
+1            Equilibration (0=no,1=yes)
+8            memory alignment in double (> 0)
 ```
 
-And increase N to fill the combined memory of both nodes (e.g., if each node has 2 GB, total ~3.2 GB usable):
-
-```
-28000        Ns
-```
-
-> A larger N across more nodes increases your R_Max score by giving the CPUs more work to do relative to the communication overhead between nodes.
+| Parameter | Value | Reason |
+|---|---|---|
+| `N` | `21000` | Fills ~80% of total cluster RAM without triggering disk swap |
+| `NB` | `224` | Optimal block size for OpenBLAS on most modern x86-64 CPUs |
+| `PMAP` | `1` (Column-major) | Reduces communication overhead in rectangular process grids |
+| `P × Q` | `2 × 3` | Matches 6 total MPI processes; closest to square for 6 |
+| `PFACT` | `2` (Right) | Right-looking factorization minimises synchronisation barriers |
+| `RFACT` | `2` (Right) | Consistent with PFACT for best cache reuse |
+| `BCAST` | `2` (2ring) | Dual-ring broadcast saturates the network link in both directions |
 
 ---
 
-### Step 5: Launch the Multi-Node HPL Run
+### Step 7: Control OpenBLAS Threading
 
-Run HPL across both compute nodes using the hosts file with 4 total MPI processes:
+When you compiled OpenBLAS from source, it was built with multi-threading support enabled by default. This means each MPI process will try to spawn multiple OpenBLAS worker threads to speed up matrix operations. In a single-node run this can be beneficial, but in a multi-node MPI run it creates a serious conflict:
+
+- You are launching **6 MPI processes** across 6 physical cores. Each process expects to own one core.
+- If each of those 6 processes spawns **2 OpenBLAS threads**, you now have 12 threads fighting for 6 cores.
+- The OS scheduler is forced to time-slice these threads. Cores sit idle while threads wait for CPU time. GFLOPS drops significantly.
+
+Fix this by setting `OPENBLAS_NUM_THREADS=1` before running HPL. This tells every OpenBLAS instance to run single-threaded, so each physical core is owned cleanly by exactly one MPI process:
 
 ```bash
-mpirun -np 4 --hostfile hosts ./xhpl
+export OPENBLAS_NUM_THREADS=1
 ```
 
-| Flag | Meaning |
+---
+
+### Step 8: Launch the Three-Node HPL Run
+
+Your headnode has **two** network interfaces:
+- `ens33` → `192.168.116.x` (NAT/internet-facing adapter)
+- `ens37` → `10.100.0.x` (private cluster network)
+
+Your compute nodes only have the `10.100.0.x` interface. Without explicit direction, OpenMPI scans all available interfaces and often routes daemon startup connections over the NAT adapter (`192.168.116.x`). Compute nodes will immediately reject these connections as coming from an unknown IP address, causing the run to abort.
+
+Always pass the `--mca` flags below to pin all MPI communication to your cluster's private subnet:
+
+| Flag | What It Controls |
 |---|---|
-| `-np 4` | Launch 4 MPI processes total |
-| `--hostfile hosts` | Distribute processes according to the `hosts` file |
-| `./xhpl` | The HPL executable to run on each process |
+| `--mca btl_tcp_if_include 10.100.0.0/24` | All MPI data transfers (the BTL byte-transfer layer) |
+| `--mca oob_tcp_if_include 10.100.0.0/24` | All MPI daemon startup and control messages (the OOB out-of-band layer) |
 
-Monitor CPU utilization on both nodes from separate terminal sessions:
+Run the benchmark from your binary directory:
 
 ```bash
-# On compute-01
-ssh compute-01 "htop"
+cd ~/hpl/bin/custom_blas_mpi
 
-# On compute-02
-ssh compute-02 "htop"
+export OPENBLAS_NUM_THREADS=1
+
+mpirun --hostfile hostfile -np 6 \
+  --mca btl_tcp_if_include 10.100.0.0/24 \
+  --mca oob_tcp_if_include 10.100.0.0/24 \
+  ./xhpl
 ```
 
-You should see all CPU cores on both machines running at full utilization during the matrix factorization phase.
-
-Record your final result as **Score 4: Multi-Node HPL (compute-01 + compute-02)** and enter it into your benchmark results table from Section 3.7.
+HPL will print a summary of the parameters it is using, then begin the benchmark. On a 3-node cluster with these settings, expect the run to take approximately 2–5 minutes.
 
 ---
+
+### Step 9: Verify That All Three Nodes Are Being Used
+
+Before committing to a long run, always verify that MPI has actually distributed processes across all three nodes. Add `--display-map` to print the process layout before HPL starts:
+
+```bash
+mpirun --hostfile hostfile -np 6 \
+  --mca btl_tcp_if_include 10.100.0.0/24 \
+  --mca oob_tcp_if_include 10.100.0.0/24 \
+  --display-map \
+  ./xhpl
+```
+
+At the very start of the output, before any HPL text, you will see a process map:
+
+```
+ ========================   JOB MAP   ========================
+
+ Data for node: headnode        Num slots: 2    Num procs: 2
+        Process rank: 0
+        Process rank: 1
+
+ Data for node: compute-01      Num slots: 2    Num procs: 2
+        Process rank: 2
+        Process rank: 3
+
+ Data for node: compute-02      Num slots: 2    Num procs: 2
+        Process rank: 4
+        Process rank: 5
+
+ =============================================================
+```
+
+If any node shows `Num procs: 0`, MPI is not reaching that node. Check that passwordless SSH works to it and that its hostname in the `hostfile` exactly matches its entry in `/etc/hosts`.
+
+You can also open separate SSH sessions to each node and run `htop` while the benchmark is running. During the matrix factorization phase, all CPU cores on all three nodes should be at 100% utilisation simultaneously.
+
+---
+
+### Step 10: Read and Record Your Results
+
+At the end of a successful run, HPL prints a results table. The column you care about is the rightmost one — `Gflops`:
+
+```
+================================================================================
+T/V                N    NB     P     Q               Time                 Gflops
+--------------------------------------------------------------------------------
+WC02R2R4       21000   224     2     3              xx.xx             x.xxxxe+01
+...
+||Ax-b||_oo/(eps*(||A||_oo*||x||_oo+||b||_oo)*N)=   x.xxxxxxxe-03 ...... PASSED
+================================================================================
+```
+
+The result is only valid if it says **PASSED**. A `FAILED` residual check means the numerical result is incorrect — this usually points to a memory, library, or binary compatibility issue, not a hardware fault.
+
+Record this as **Score 4: Multi-Node HPL (headnode + compute-01 + compute-02)** in your benchmark results table from Section 3.7.
+
+---
+
+### Troubleshooting Common Multi-Node Failures
+
+| Symptom | Root Cause | Fix |
+|---|---|---|
+| `unable to complete a TCP connection` | Wrong network interface selected by MPI | Add `--mca btl_tcp_if_include 10.100.0.0/24` and `--mca oob_tcp_if_include 10.100.0.0/24` |
+| `connect() to 10.100.0.10:XXXX failed` | nftables firewall blocking MPI dynamic ports | Ensure `ip saddr 10.100.0.0/24 accept` is in `hn_input` — reload with `sudo nft -f /etc/nftables/hn.nft` |
+| Remote node shows `/usr/bin/mpirun` | Environment exports are below the interactive guard in `~/.bashrc` | Move exports to the very top of `~/.bashrc`, before the `case $-` guard |
+| PMIX / ORTE segfault on connection | System MPI and custom MPI version mismatch | Environment not set — verify `ssh compute-01 "which mpirun"` returns your custom path |
+| HPL takes 10+ minutes, GFLOPS collapses | RAM exhausted — nodes are swapping to disk | Reduce `N` using the formula in Step 5 for your actual available RAM |
+| All processes on one node despite hostfile | SSH key not set up for one of the nodes | Run `ssh compute-02 "echo OK"` — if it asks for a password, copy SSH keys first |
+| GFLOPS lower than your single-node run | OpenBLAS spawning multiple threads per MPI process | `export OPENBLAS_NUM_THREADS=1` before launching `mpirun` |
+| Duplicate reject rules blocking traffic | `nft -f` was run multiple times, stacking rules | Use `sudo tee` to overwrite `hn.nft` cleanly, then run `sudo nft -f` only once |
+
+---
+
 
 ## 3.9. Summary
 
