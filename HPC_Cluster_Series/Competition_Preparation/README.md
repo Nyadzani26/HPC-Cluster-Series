@@ -1179,21 +1179,22 @@ esac
 
 Any environment variables you append to the bottom of `~/.bashrc` (below this guard) are **never evaluated** by the remote MPI shell. This means the remote `orted` daemon starts without your custom `$PATH`, falls back to `/usr/bin/mpirun` (the system-installed OpenMPI), and immediately crashes because the headnode and compute nodes are running different MPI versions.
 
-**The fix:** Export your environment variables at the **very top** of `~/.bashrc`, before the interactive guard. Run this command **once** on the headnode — because your home directory is NFS-shared, it updates the file for all nodes simultaneously:
+**The fix:** Export your environment variables at the **very top** of `~/.bashrc`, before the interactive guard. Open the file on the headnode — because your home directory is NFS-shared, this single edit takes effect on all nodes simultaneously:
 
 ```bash
-# Back up your current .bashrc first
-cp ~/.bashrc ~/.bashrc.bak
-
-# Prepend the environment exports to the very top of .bashrc
-{
-  echo 'export MPI_HOME=$HOME/opt/openmpi'
-  echo 'export OPENBLAS_HOME=$HOME/opt/openblas'
-  echo 'export PATH=$MPI_HOME/bin:$PATH'
-  echo 'export LD_LIBRARY_PATH=$MPI_HOME/lib:$OPENBLAS_HOME/lib:$LD_LIBRARY_PATH'
-  cat ~/.bashrc.bak
-} > /tmp/new_bashrc && mv /tmp/new_bashrc ~/.bashrc
+nano ~/.bashrc
 ```
+
+Scroll to the **very first line** of the file and add these four lines above everything else that is already there:
+
+```bash
+export MPI_HOME=$HOME/opt/openmpi
+export OPENBLAS_HOME=$HOME/opt/openblas
+export PATH=$MPI_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$MPI_HOME/lib:$OPENBLAS_HOME/lib:$LD_LIBRARY_PATH
+```
+
+Save and close (`Ctrl+O`, `Enter`, `Ctrl+X`).
 
 **Verify the fix works for non-interactive SSH** — this is the exact same type of shell that `mpirun` will use:
 
@@ -1213,10 +1214,15 @@ Your `headnode` runs a stateful `nftables` firewall (configured in Chapter 1) wi
 
 The correct approach is to **trust all traffic originating from the private cluster subnet** (`10.100.0.0/24`). Any machine that can reach the headnode on this network is already inside your cluster — it has passed your physical network boundary.
 
-Write a clean, corrected firewall configuration to the headnode using `tee` to overwrite the file cleanly (this avoids accidentally stacking duplicate rules, which silently breaks the firewall):
+Open the firewall configuration file:
 
 ```bash
-sudo tee /etc/nftables/hn.nft << 'EOF'
+sudo nano /etc/nftables/hn.nft
+```
+
+Delete everything currently in the file and replace it with exactly the following:
+
+```
 table inet hn_table {
         chain hn_input {
                 type filter hook input priority filter; policy drop;
@@ -1259,8 +1265,9 @@ table inet my_nat {
                 oifname "ens33" masquerade
         }
 }
-EOF
 ```
+
+Save and close (`Ctrl+O`, `Enter`, `Ctrl+X`).
 
 Apply and reload the ruleset:
 
