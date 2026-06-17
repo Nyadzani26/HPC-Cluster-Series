@@ -12,7 +12,7 @@ To achieve this, we cannot rely on human operators refreshing terminal windows u
 
 ## 4.2. The Time-Series Database Paradigm
 
-Standard relational databases (like SQL) are designed for transactional data—bank records, user inventories, or customer lists. They are optimized to update existing rows and guarantee consistency. This model is fundamentally ill-suited for telemetry data.
+Standard relational databases (like SQL) are designed for transactional data — bank records, user inventories, or customer lists. They are optimized to update existing rows and guarantee consistency. This model is fundamentally ill-suited for telemetry data.
 
 In telemetry, we are dealing with **Time-Series Data**:
 1.  **Immutable:** Once a measurement is taken (e.g., "CPU Load at 12:00:01 was 90%"), it never changes. We never update old records.
@@ -50,110 +50,356 @@ In this laboratory, we will deploy the **Node Exporter**. This is the industry-s
 
 ---
 
-# 4.5. Laboratory: Turning on the Lights
+## 4.5. Why Docker?
 
-In this lab, we will deploy the full Observability Stack: **Node Exporter** (the sensor), **Prometheus** (the brain), and **Grafana** (the face).
+In this tutorial, we deploy the entire monitoring stack using **Docker containers** rather than installing packages directly onto the host operating system. This is the approach used by the CHPC competition environment and reflects modern production practice. There are several key reasons:
 
-### **Step 1: Installing the Sensor (Node Exporter)**
+*   **Isolation:** Each service (Prometheus, Grafana, Node Exporter) runs in its own container with its own dependencies. There is no risk of conflicting libraries or version clashes with other software on the host.
+*   **Portability:** The entire stack is defined in a single `docker-compose.yml` file. You can tear it down and bring it back up on any machine running Docker with a single command.
+*   **Reproducibility:** The exact same configuration runs identically on every node. There is no "it works on my machine" problem.
+*   **Easy Updates:** Updating a service is as simple as pulling a new image version and restarting the container.
 
-We must install this on **EVERY** node in the cluster, because we want to monitor every machine.
+---
 
-**On `headnode` AND `compute-01`:**
-```bash
-sudo apt update
-sudo apt install prometheus-node-exporter -y
+## 4.6. The Architecture of Our Stack
+
+Before we begin, understand the layout of what we are building:
+
+```
++--------------------------+        +---------------------------+        +---------------------------+
+|       headnode           |        |       compute-01          |        |       compute-02          |
+|  (10.100.0.10)           |        |  (10.100.0.11)            |        |  (10.100.0.12)            |
+|                          |        |                           |        |                           |
+|  [node-exporter :9100]   |        |  [node-exporter :9100]    |        |  [node-exporter :9100]    |
+|  [prometheus    :9090]   |        |                           |        |                           |
+|  [grafana       :3000]   |        |                           |        |                           |
++-----------+--------------+        +---------------------------+        +---------------------------+
+            |                                    ^                                    ^
+            |   scrapes metrics every 15 seconds |                                    |
+            +------------------------------------+------------------------------------+
 ```
 
-**Verification:**
-The exporter should immediately start a web server on port 9100. Text it using `curl`:
+*   **Node Exporter** runs on **every node** (headnode, compute-01, compute-02). It reads the host system's metrics and serves them on port `9100`.
+*   **Prometheus** runs **only on the headnode**. Every 15 seconds, it connects to each node's port `9100` and downloads ("scrapes") the current metrics.
+*   **Grafana** runs **only on the headnode**. It queries Prometheus and displays beautiful, interactive dashboards on port `3000`.
+
+All three services run with `network_mode: "host"`. This means they share the headnode's actual network interface rather than a private Docker virtual network. This is the most reliable approach for a cluster environment because it avoids any internal Docker DNS or routing issues when connecting to compute nodes on the cluster's private network.
+
+---
+
+# 4.7. Laboratory: Turning on the Lights
+
+### **Prerequisites: Install Docker on ALL Nodes**
+
+Docker must be installed on every node you want to monitor. In our cluster, that means **headnode**, **compute-01**, and **compute-02**.
+
+Run the following commands on **each node** one by one. SSH into each node before running:
+
 ```bash
+# Step 1: Install required dependencies for adding an external repository
+sudo apt update
+sudo apt install -y apt-transport-https ca-certificates curl software-properties-common
+
+# Step 2: Add Docker's official GPG signing key so apt can verify downloaded packages
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Step 3: Add the official Docker repository to apt's source list
+# lsb_release -cs returns your Ubuntu version codename (e.g., "jammy" for 22.04)
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list
+
+# Step 4: Refresh the package list so apt sees the new Docker repository, then install
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# Step 5: Start the Docker service and configure it to auto-start on boot
+sudo systemctl start docker
+sudo systemctl enable docker
+```
+
+**Verify Docker is working correctly** by running the test container:
+```bash
+sudo docker run hello-world
+```
+You should see a "Hello from Docker!" message. This confirms Docker can pull and run images successfully.
+
+> **Note:** If you previously installed `prometheus-node-exporter` via `apt`, disable it on all nodes before continuing. The Docker container needs port `9100` to be free:
+> ```bash
+> sudo systemctl stop prometheus-node-exporter
+> sudo systemctl disable prometheus-node-exporter
+> ```
+
+---
+
+### **Step 1: Run Node Exporter on the Compute Nodes**
+
+Node Exporter is the "sensor" — it reads every metric the Linux kernel exposes about the hardware and serves it as text over HTTP on port `9100`. We need it running on every compute node so that Prometheus (on the headnode) can collect their metrics.
+
+Run this on **`compute-01`** and **`compute-02`** (SSH into each one):
+
+```bash
+sudo docker run -d \
+  --name=node-exporter \
+  --restart=always \
+  --net="host" \
+  --pid="host" \
+  -v "/:/host:ro,rslave" \
+  prom/node-exporter \
+  --path.rootfs=/host
+```
+
+**Breaking down the flags:**
+*   `--name=node-exporter` — Give the container a fixed name so we can refer to it later.
+*   `--restart=always` — Docker will automatically restart this container if the node reboots.
+*   `--net="host"` — Use the host's network namespace directly. This means the container listens on the actual node's IP address, not a Docker virtual IP. This is important so that Prometheus on the headnode can reach it.
+*   `--pid="host"` — Give the container visibility into all processes running on the host. Without this, Node Exporter would only see processes inside the container, not the real system workloads.
+*   `-v "/:/host:ro,rslave"` — Mount the host's entire root filesystem into the container at `/host` in read-only mode (`ro`). This is how Node Exporter reads the real `/proc`, `/sys`, and `/etc` from the host rather than the container's virtual view.
+*   `--path.rootfs=/host` — Tell Node Exporter to look at `/host` as its root filesystem (matching the volume mount above).
+
+**Verify Node Exporter is running on each compute node:**
+```bash
+sudo docker ps
 curl localhost:9100/metrics | head -n 10
 ```
-*You should see lines of text beginning with `node_cpu_seconds` or `node_vmstat`. This is the raw data.*
+You should see lines like `node_cpu_seconds_total` and `node_memory_MemFree_bytes`. This is the raw telemetry data that Prometheus will collect.
 
 ---
 
-### **Step 2: Installing the Brain (Prometheus)**
+### **Step 2: Set Up the Monitoring Stack on the Headnode**
 
-We install this **ONLY** on the `headnode`.
+All configuration for Prometheus and Grafana lives in `/opt/monitoring_stack` on the headnode. We will create three files:
+1.  `docker-compose.yml` — defines all three containers and how they run
+2.  `prometheus.yml` — tells Prometheus which nodes to scrape
+3.  `prometheus-datasource.yaml` — tells Grafana where to find Prometheus automatically
 
-1.  **Install:**
-    ```bash
-    sudo apt install prometheus -y
-    ```
-2.  **Configure:**
-    We need to tell Prometheus where our nodes are.
-    ```bash
-    sudo nano /etc/prometheus/prometheus.yml
-    ```
-    Scroll to the `scrape_configs` section and add your nodes:
-    ```yaml
-      - job_name: 'node_exporter'
-        scrape_interval: 15s
-        static_configs:
-          - targets: ['headnode:9100', 'compute-01:9100']
-    ```
-3.  **Restart:**
-    ```bash
-    sudo systemctl restart prometheus
-    ```
+**On `headnode`**, run:
 
-**Verification:**
-Open your web browser on your Windows machine and navigate to: `http://192.168.116.10:9090/targets`. You should see both endpoints listed with a status of **UP**.
+```bash
+# Create the directory that holds all our configuration files
+sudo mkdir -p /opt/monitoring_stack
+cd /opt/monitoring_stack
+```
 
 ---
 
-### **Step 3: Installing the Face (Grafana)**
+#### **File 1: `docker-compose.yml`**
 
-Prometheus collects the data, but it is terrible at displaying it. Grafana is a visualization engine that queries Prometheus and draws beautiful, interactive dashboards.
+This is the master configuration file. Docker Compose reads it and manages all three containers as a single coordinated stack.
 
-**On `headnode`:**
-1.  **Install Dependencies:**
-    ```bash
-    sudo apt install -y software-properties-common
-    sudo wget -q -O /usr/share/keyrings/grafana.key https://apt.grafana.com/gpg.key
-    echo "deb [signed-by=/usr/share/keyrings/grafana.key] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
-    sudo apt update
-    sudo apt install grafana -y
-    ```
-2.  **Start the Service:**
-    ```bash
-    sudo systemctl enable grafana-server
-    sudo systemctl start grafana-server
-    ```
-3.  **Access:**
-    Open `http://192.168.116.10:3000` in your browser. Default login is `admin` / `admin`.
+```bash
+sudo tee /opt/monitoring_stack/docker-compose.yml > /dev/null << 'EOF'
+version: '3'
+services:
+
+  # ── Node Exporter ───────────────────────────────────────────────────────────
+  # Runs on the headnode itself to collect headnode metrics.
+  # Uses host networking and pid namespace so it can see the real hardware.
+  node-exporter:
+    image: prom/node-exporter
+    container_name: node-exporter
+    restart: always
+    network_mode: "host"
+    pid: "host"
+    volumes:
+      - "/:/host:ro,rslave"
+    command:
+      - '--path.rootfs=/host'
+
+  # ── Prometheus ───────────────────────────────────────────────────────────────
+  # The time-series database. Scrapes metrics from all node-exporters every 15s.
+  # Uses host networking so it can reach compute nodes on the cluster network.
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    restart: always
+    network_mode: "host"
+    volumes:
+      - /opt/monitoring_stack/prometheus.yml:/etc/prometheus/prometheus.yml
+
+  # ── Grafana ──────────────────────────────────────────────────────────────────
+  # The visualization layer. Reads data from Prometheus and draws dashboards.
+  # Uses host networking so it can reach Prometheus (also on host network).
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    restart: always
+    network_mode: "host"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+    volumes:
+      - /opt/monitoring_stack/prometheus-datasource.yaml:/etc/grafana/provisioning/datasources/prometheus-datasource.yaml
+EOF
+```
+
+> **Why `network_mode: "host"` for all services?**
+> By default, Docker gives each container a private virtual IP on an internal bridge network. Containers on this bridge can talk to each other using their service names as hostnames (e.g., `http://prometheus:9090`). However, those internal names only work *within* the Docker bridge — they cannot reach external hosts like `compute-01` or `compute-02` on the cluster's private network. By setting `network_mode: "host"`, all containers share the headnode's actual network interface. This means Prometheus can directly dial `10.100.0.11:9100` to scrape `compute-01`, and Grafana can reach Prometheus at `http://127.0.0.1:9090` — no Docker DNS magic required.
 
 ---
 
-### **Step 4: Connecting the Dots**
+#### **File 2: `prometheus.yml`**
 
-1.  **Add Data Source:**
-    *   In Grafana, go to **Connections > Data Sources**.
-    *   Select **Prometheus**.
-    *   URL: `http://localhost:9090`.
-    *   Click **Save & Test**.
+This tells Prometheus what to scrape and where to find it. Replace the IP addresses with your actual node IPs.
 
-2.  **Import Dashboard:**
-    *   Building graphs from scratch is hard. We will import a community standard.
-    *   Go to **Dashboards > Import**.
-    *   Enter Dashboard ID: `1860` (Node Exporter Full).
-    *   Select your Prometheus data source and click **Import**.
+```bash
+sudo tee /opt/monitoring_stack/prometheus.yml > /dev/null << 'EOF'
+global:
+  # How often Prometheus collects (scrapes) metrics from each target
+  scrape_interval: 15s
 
-### **Step 5: The Stress Test**
+scrape_configs:
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets:
+        # Headnode: use 127.0.0.1 (localhost) because node-exporter is on the same host
+        - '127.0.0.1:9100'
+        # Compute nodes: use their actual private IP addresses
+        - '10.100.0.11:9100'   # compute-01
+        - '10.100.0.12:9100'   # compute-02
+EOF
+```
 
-A monitoring system is useless if there is nothing to monitor. Let’s generate a synthetic failure signal.
+> **Why `127.0.0.1` for the headnode instead of its IP?**
+> Since Prometheus is running in `network_mode: "host"` and Node Exporter is also running in `network_mode: "host"` on the same machine, they both share the headnode's localhost. Using `127.0.0.1:9100` is the most direct and reliable way to reach the local Node Exporter — it avoids any routing through the physical network interface.
 
-1.  **Install Stress Tool (on `compute-01`):**
-    ```bash
-    sudo apt install stress-ng -y
-    ```
-2.  **Run a Stress Job:**
-    Submit a job that eats 100% of the CPU:
-    ```bash
-    sbatch --wrap="stress-ng --cpu 1 --timeout 60"
-    ```
-3.  **Observe:**
-    Look at your Grafana dashboard. You will see the CPU graph spike to 100% (or higher, showing "System Load") for exactly 60 seconds, then drop.
+> **Finding your node IPs:** Check `/etc/hosts` on your headnode with `cat /etc/hosts`. It will list the private IP addresses for all nodes in your cluster. Use those values in the targets list above.
 
-**You have now successfully visualized the heartbeat of your cluster.**
+---
+
+#### **File 3: `prometheus-datasource.yaml`**
+
+This file is automatically read by Grafana at startup and pre-configures the Prometheus data source. Without it, you would have to manually add the data source through the Grafana UI every time you rebuild the stack.
+
+```bash
+sudo tee /opt/monitoring_stack/prometheus-datasource.yaml > /dev/null << 'EOF'
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    # Since Grafana and Prometheus both use host networking,
+    # Grafana reaches Prometheus at localhost on port 9090.
+    url: http://127.0.0.1:9090
+EOF
+```
+
+---
+
+### **Step 3: Start the Stack**
+
+Now bring the full monitoring stack up. Docker Compose will pull the images (first time only) and start all three containers:
+
+```bash
+cd /opt/monitoring_stack
+sudo docker compose up -d
+```
+
+The `-d` flag runs the containers in the background ("detached" mode) so they keep running after you close your terminal.
+
+**Verify all containers are running:**
+```bash
+sudo docker ps
+```
+
+You should see three containers: `prometheus`, `grafana`, and `node-exporter`. All should show status `Up`.
+
+---
+
+### **Step 4: Verify Prometheus Can Reach All Nodes**
+
+Before opening Grafana, confirm that Prometheus has successfully scraped all three node exporters:
+
+```bash
+curl localhost:9090/api/v1/targets
+```
+
+Look for the `"health"` field in the JSON response. Each target should show `"health":"up"`:
+- `127.0.0.1:9100` — headnode ✅
+- `10.100.0.11:9100` — compute-01 ✅
+- `10.100.0.12:9100` — compute-02 ✅
+
+If a target shows `"health":"down"`, check:
+1.  Is Node Exporter running on that node? (`sudo docker ps` on the compute node)
+2.  Is port `9100` reachable from the headnode? (`curl 10.100.0.11:9100/metrics`)
+3.  Is there a firewall blocking port `9100`? (`sudo ufw status`)
+
+---
+
+### **Step 5: Access Grafana and Import the Dashboard**
+
+Grafana runs on port `3000`. Since your cluster is headless (no GUI), you will access it from your **local laptop** via an SSH tunnel.
+
+**On your local laptop terminal**, open the tunnel:
+```bash
+ssh -L 3000:localhost:3000 ubuntu@<headnode-ip>
+```
+
+Now open your browser and go to: **`http://localhost:3000`**
+
+**Login credentials:**
+*   Username: `admin`
+*   Password: `admin123`
+
+**The Prometheus data source is already configured** (from the provisioning file we created). You can verify it by going to **Connections > Data Sources** — you should see Prometheus listed with a green checkmark after clicking **Save & Test**.
+
+**Import the Node Exporter Full Dashboard:**
+1.  In Grafana, click the **+** icon or go to **Dashboards > New > Import**.
+2.  Enter dashboard ID: **`1860`** and click **Load**.
+3.  Select **Prometheus** from the data source dropdown.
+4.  Click **Import**.
+
+You will now see a comprehensive dashboard showing CPU usage, memory, disk I/O, network traffic, and much more — for each node in your cluster. Use the **Instance** dropdown at the top of the dashboard to switch between `headnode`, `compute-01`, and `compute-02`.
+
+---
+
+### **Step 6: The Stress Test**
+
+A monitoring system is only proven when there is something to observe. Let's generate a synthetic load on one of the compute nodes and watch it appear on the Grafana dashboard in real time.
+
+**Install the stress tool on `compute-01`** (and `compute-02` if desired):
+```bash
+sudo apt install stress-ng -y
+```
+
+**Run a CPU stress job via Slurm:**
+```bash
+sbatch --wrap="stress-ng --cpu $(nproc) --timeout 60"
+```
+
+This command tells Slurm to run a job that saturates **all CPU cores** (`$(nproc)` expands to the number of cores) for exactly **60 seconds**.
+
+**Observe in Grafana:**
+Switch to the `compute-01` instance on the Node Exporter Full dashboard. Within 15 seconds (one scrape interval), you will see the CPU graph spike to 100%. After 60 seconds, it will drop back to idle. 
+
+You have just observed a workload on your cluster in real time. This is exactly what competition judges and system administrators use to identify bottlenecks, rogue jobs, and failing hardware.
+
+---
+
+## 4.8. Useful Management Commands
+
+Once the stack is running, these commands will be your everyday tools:
+
+```bash
+# Check the status of all containers
+sudo docker ps
+
+# View live logs from Prometheus (useful for debugging scrape errors)
+sudo docker logs prometheus -f
+
+# View live logs from Grafana
+sudo docker logs grafana -f
+
+# Restart a single service after editing its config
+sudo docker compose restart prometheus
+
+# Stop the entire monitoring stack (containers are removed but images are kept)
+sudo docker compose down
+
+# Start the stack back up
+sudo docker compose up -d
+
+# Check what Prometheus sees as its targets and their health
+curl localhost:9090/api/v1/targets
+```
+
+---
+
+**You have now successfully wired your cluster with a production-grade observability stack. The heartbeat of every node is visible in real time.**
