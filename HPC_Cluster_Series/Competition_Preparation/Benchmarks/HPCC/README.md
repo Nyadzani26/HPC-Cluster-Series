@@ -154,11 +154,14 @@ ARCH         = custom
 # ----------------------------------------------------------------------
 # HPL Directory Structure
 # ----------------------------------------------------------------------
-TOPdir       = $(HOME)/hpcc-1.5.0
+# NOTE: If you renamed your main directory to ~/hpcc instead of ~/hpcc-1.5.0, 
+# change $(HOME)/hpcc-1.5.0/hpl to $(HOME)/hpcc/hpl below.
+TOPdir       = $(HOME)/hpcc-1.5.0/hpl
 INCdir       = $(TOPdir)/include
 BINdir       = $(TOPdir)/bin/$(ARCH)
 LIBdir       = $(TOPdir)/lib/$(ARCH)
-HPLdir       = $(TOPdir)/hpl
+HPLdir       = $(TOPdir)
+HPLlib       = $(LIBdir)/libhpl.a
 
 # ----------------------------------------------------------------------
 # MPI Configuration
@@ -195,16 +198,17 @@ RANLIB       = echo
 # Preprocessor Macros
 # ----------------------------------------------------------------------
 HPL_OPTS     = -DHPL_CALL_CBLAS
-HPL_DEFS     = $(HPL_OPTS) $(MPinc) $(LAinc)
+HPL_DEFS     = $(HPL_OPTS) -I$(INCdir) $(MPinc) $(LAinc)
 
 # Runtime linker paths
-HPL_LIBS     = $(HPLdir)/lib/$(ARCH)/libhpl.a $(LAlib) $(MPlib) -lm
+HPL_LIBS     = $(HPLlib) $(LAlib) $(MPlib) -lm
 ```
 
 Save and exit: `Ctrl+X`, `Y`, `Enter`.
 
 > **Key variables explained:**
-> - `TOPdir` — root of the HPCC source tree (must be an absolute path)
+> - `TOPdir` — root of the HPL source subdirectory (must be an absolute path pointing to the `hpl` folder)
+> - `HPLlib` — points to the compiled HPL static library
 > - `MPdir` — where your OpenMPI was installed
 > - `LAdir` — where your OpenBLAS was installed
 > - `-march=native` — generates code optimised for the exact CPU in the machine compiling it (enables AVX, SSE4.2, etc.)
@@ -215,17 +219,35 @@ Save and exit: `Ctrl+X`, `Y`, `Enter`.
 
 ### Step 4: Build HPCC
 
-With the Make file in place, build the entire HPCC suite from the top-level directory:
+Before compiling, there is an important compatibility step. HPCC includes legacy code that uses old MPI-1 functions (`MPI_Address` and `MPI_Type_struct`) which were deprecated and removed in MPI-3.0 (and thus fail to compile on modern OpenMPI 4.x/5.x by default). 
+
+#### 4a. Update legacy MPI functions
+To make the codebase compatible with modern OpenMPI, run the following `sed` commands from your terminal to update the source files to use modern replacements (`MPI_Get_address` and `MPI_Type_create_struct`):
 
 ```bash
+# Replace MPI_Address with MPI_Get_address
+find ~/hpcc-1.5.0/ -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/MPI_Address/MPI_Get_address/g' {} +
+
+# Replace MPI_Type_struct with MPI_Type_create_struct
+find ~/hpcc-1.5.0/ -type f \( -name "*.c" -o -name "*.h" \) -exec sed -i 's/MPI_Type_struct/MPI_Type_create_struct/g' {} +
+```
+*(If you renamed your main directory to `hpcc`, replace `hpcc-1.5.0` with `hpcc` in the paths above).*
+
+#### 4b. Sync architecture file and compile HPL first
+HPCC's main build system does not build the underlying HPL engine library automatically. We must copy the architecture file to the root of the source tree, build the HPL subdirectory first, and then build the top-level binary.
+
+```bash
+# 1. Sync the Make.custom file to the root directory
+cp ~/hpcc-1.5.0/hpl/Make.custom ~/hpcc-1.5.0/Make.custom
+
+# 2. Build the HPL engine first
+cd ~/hpcc-1.5.0/hpl
+make arch=custom clean
+make arch=custom
+
+# 3. Build the final HPCC binary
 cd ~/hpcc-1.5.0
 make arch=custom
-```
-
-The build compiles all benchmark components and links them into a **single binary**: `hpcc`. This takes 2–5 minutes. You will see compiler output ending with something like:
-
-```
-mpicc -O3 -march=native ... -o hpcc src/hpcc.o ... -lopenblas -lmpi -lm
 ```
 
 #### Verify the Build Succeeded
@@ -239,10 +261,10 @@ Expected output:
 -rwxrwxr-x 1 ubuntu ubuntu 799K Jun 16 23:22 /home/ubuntu/hpcc-1.5.0/hpcc
 ```
 
-> **If the build fails with `undefined reference to 'main'`**, the linker ran before all object files were compiled. This is a known issue when the `lib/` directory already exists from a previous partial build. Clean and rebuild:
+> **If the build fails with `undefined reference to 'main'`**, the linker ran before all object files were compiled. Clean and rebuild:
 >
 > ```bash
-> rm -rf ~/hpcc-1.5.0/lib/custom ~/hpcc-1.5.0/hpcc
+> rm -rf ~/hpcc-1.5.0/hpl/lib/custom ~/hpcc-1.5.0/hpcc
 > make arch=custom
 > ```
 
